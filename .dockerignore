@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+.python-version
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+data/
+infra/
+tests/
+README.md
+AGENTS.MD
+.env

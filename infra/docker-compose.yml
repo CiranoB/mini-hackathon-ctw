@@ -7,12 +7,46 @@ services:
       PERSIST_STATE: "1"
       S3_PERSIST: "1"
       ATHENA_ENGINE: duckdb
-    ports:
-      - "4566:4566"
+    expose:
+      - "4566"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ministack_state:/tmp/ministack-state
       - ministack_s3:/tmp/ministack-data/s3
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: toxiproxy
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    ports:
+      - "4566:4566"   # API/clients hit ministack through the proxy here
+      - "8474:8474"   # Toxiproxy admin API (add/remove latency toxics)
+    volumes:
+      - ./resources/toxiproxy.json:/config/toxiproxy.json:ro
+    depends_on:
+      - ministack
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: api
+    environment:
+      # Route AWS SDK traffic through toxiproxy so latency toxics apply.
+      AWS_ENDPOINT_URL: http://toxiproxy:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      VEHICLE_DATA_BUCKET: vehicle-data
+      VEHICLE_DATA_PREFIX: parquet/
+      ATHENA_OUTPUT_LOCATION: s3://athena-results/
+    ports:
+      - "8000:8000"
+    # Resource limits — must stay within the challenge constraints.
+    mem_limit: 512m
+    cpus: 0.5
+    depends_on:
+      - toxiproxy
 
 volumes:
   ministack_state:
