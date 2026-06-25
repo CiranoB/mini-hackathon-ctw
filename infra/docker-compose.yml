@@ -26,6 +26,23 @@ services:
     depends_on:
       - ministack
 
+  # One-shot init: applies the latency toxic so the delay is always present
+  # without a manual ./latency.sh call. Override via LATENCY_MS / JITTER_MS.
+  toxics-init:
+    image: curlimages/curl:8.10.1
+    container_name: toxics-init
+    restart: "no"
+    environment:
+      TOXIPROXY_ADMIN: http://toxiproxy:8474
+      PROXY: ministack
+      LATENCY_MS: "150"
+      JITTER_MS: "0"
+    volumes:
+      - ./resources/apply-toxics.sh:/apply-toxics.sh:ro
+    entrypoint: ["sh", "/apply-toxics.sh"]
+    depends_on:
+      - toxiproxy
+
   api:
     build:
       context: ..
@@ -43,10 +60,11 @@ services:
     ports:
       - "8000:8000"
     # Resource limits — must stay within the challenge constraints.
-    mem_limit: 512m
+    # mem_limit: 1024m
     cpus: 0.5
     depends_on:
       - toxiproxy
+      - toxics-init
 
 volumes:
   ministack_state:

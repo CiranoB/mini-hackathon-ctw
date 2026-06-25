@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from io import BytesIO
 
 import boto3
 import pyarrow.parquet as pq
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("api.timing")
 
 
 def _get_s3_client():
@@ -87,6 +94,24 @@ def _read_parquet_rows(bucket: str, key: str) -> list[dict]:
 
 
 app = FastAPI(title="Vehicle Data API")
+
+
+@app.middleware("http")
+async def add_timing(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.2f}"
+    query = f"?{request.url.query}" if request.url.query else ""
+    logger.info(
+        "%s %s%s -> %s in %.2f ms",
+        request.method,
+        request.url.path,
+        query,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 @app.get("/health")
@@ -297,9 +322,9 @@ def _to_bool(value: object) -> bool:
 
 @app.get("/vehicle-summary")
 def vehicle_summary(
-    manufacturer: str = Query(description="Manufacturer name, e.g. BMW."),
-    model: str = Query(description="Model name, e.g. X1."),
-    year: int = Query(description="Model year, e.g. 1999."),
+    manufacturer: str = Query(description="Manufacturer name, e.g. BMW.", default="BMW"),
+    model: str = Query(description="Model name, e.g. X1.", default="X1"),
+    year: int = Query(description="Model year, e.g. 1999.", default=1999),
 ) -> dict[str, object]:
     bucket = os.getenv("VEHICLE_DATA_BUCKET", "vehicle-data")
     prefix = os.getenv("VEHICLE_DATA_PREFIX", "parquet/")
