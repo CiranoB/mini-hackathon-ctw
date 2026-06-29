@@ -66,6 +66,138 @@ TARGETS: list[tuple[str, str, int]] = [
     ("Maker_5797", "Model_73965", 2006),
 ]
 
+# --------------------------------------------------------------------------- #
+# Correctness fixture for the deterministic anchor. BMW X1 1999 always resolves
+# to the same row, so we can assert the full response payload exactly. Any drift
+# here means the optimization changed the *meaning* of the data, not just its
+# speed — which must fail the load test.
+# --------------------------------------------------------------------------- #
+EXPECTED_BMW_X1_1999: dict = {
+    "manufacturer": {"name": "BMW", "country": "Germany", "founded_year": 1916},
+    "model": {"name": "X1", "segment": "SUV", "msrp_usd": 38000},
+    "generation": {"name": "F48", "start_year": 1995, "end_year": 2010},
+    "recalls": {"open_recall": True, "had_any_recall": True, "recall_count": 8},
+    "parts": [
+        "Engine Block",
+        "Turbocharger",
+        "ABS Module",
+        "Part_14599",
+        "Part_38591",
+        "Part_49811",
+        "Part_59807",
+        "Part_60328",
+        "Part_60372",
+        "Part_72085",
+        "Part_83709",
+        "Part_95817",
+        "Part_96706",
+        "Part_134539",
+        "Part_137310",
+        "Part_150204",
+        "Part_160682",
+        "Part_190847",
+        "Part_193558",
+    ],
+    "consumers": {"total_owners": 15, "top_country": "USA"},
+    "safety_rating": {"agency": "NHTSA", "overall_rating": 4.8, "crash_test_score": 93},
+}
+
+
+def _validate_summary(
+    body: dict, manufacturer: str, model: str, year: int
+) -> str | None:
+    """Check that a /vehicle-summary payload is internally consistent and makes
+    sense. Returns ``None`` when the response is sound, otherwise a short string
+    describing the first problem found (used as the Locust failure message).
+    """
+    # Exact-match the deterministic anchor against the known fixture.
+    if (manufacturer, model, year) == ("BMW", "X1", 1999):
+        if body != EXPECTED_BMW_X1_1999:
+            return "BMW X1 1999 payload does not match expected fixture"
+        return None
+
+    # --- shape: every top-level section must be present -------------------- #
+    for section in (
+        "manufacturer",
+        "model",
+        "generation",
+        "recalls",
+        "parts",
+        "consumers",
+        "safety_rating",
+    ):
+        if section not in body:
+            return f"Missing section '{section}'"
+
+    man = body["manufacturer"]
+    mod = body["model"]
+    gen = body["generation"]
+    rec = body["recalls"]
+    parts = body["parts"]
+    cons = body["consumers"]
+    safety = body["safety_rating"]
+
+    # --- manufacturer / model: must echo what was requested ---------------- #
+    if man.get("name") != manufacturer:
+        return f"manufacturer.name={man.get('name')!r} != requested {manufacturer!r}"
+    if not man.get("country"):
+        return "manufacturer.country is empty"
+    founded = man.get("founded_year")
+    if not isinstance(founded, int) or not (1800 <= founded <= 2100):
+        return f"manufacturer.founded_year out of range: {founded!r}"
+
+    if mod.get("name") != model:
+        return f"model.name={mod.get('name')!r} != requested {model!r}"
+    if not mod.get("segment"):
+        return "model.segment is empty"
+    msrp = mod.get("msrp_usd")
+    if not isinstance(msrp, int) or msrp <= 0:
+        return f"model.msrp_usd not a positive int: {msrp!r}"
+
+    # --- generation: requested year must fall inside the generation span --- #
+    start, end = gen.get("start_year"), gen.get("end_year")
+    if start is not None and end is not None:
+        if not (isinstance(start, int) and isinstance(end, int)):
+            return f"generation years not ints: {start!r}/{end!r}"
+        if start > end:
+            return f"generation.start_year {start} > end_year {end}"
+        if not (start <= year <= end):
+            return f"requested year {year} outside generation {start}-{end}"
+
+    # --- recalls: counters must be consistent with each other -------------- #
+    count = rec.get("recall_count")
+    if not isinstance(count, int) or count < 0:
+        return f"recalls.recall_count invalid: {count!r}"
+    if not isinstance(rec.get("open_recall"), bool):
+        return "recalls.open_recall is not a bool"
+    if rec.get("had_any_recall") != (count > 0):
+        return f"recalls.had_any_recall inconsistent with recall_count={count}"
+    if count == 0 and rec.get("open_recall") is True:
+        return "open_recall=True but recall_count=0"
+
+    # --- parts: list of non-empty strings ---------------------------------- #
+    if not isinstance(parts, list):
+        return "parts is not a list"
+    if any(not isinstance(p, str) or not p for p in parts):
+        return "parts contains an empty/non-string entry"
+
+    # --- consumers: owner count vs top_country must agree ------------------ #
+    owners = cons.get("total_owners")
+    if not isinstance(owners, int) or owners < 0:
+        return f"consumers.total_owners invalid: {owners!r}"
+    if owners > 0 and not cons.get("top_country"):
+        return "total_owners>0 but top_country is empty"
+
+    # --- safety rating: optional, but ranges must be sane when present ------ #
+    overall = safety.get("overall_rating")
+    if overall is not None and not (0.0 <= float(overall) <= 5.0):
+        return f"safety_rating.overall_rating out of [0,5]: {overall!r}"
+    crash = safety.get("crash_test_score")
+    if crash is not None and not (0 <= int(crash) <= 100):
+        return f"safety_rating.crash_test_score out of [0,100]: {crash!r}"
+
+    return None
+
 
 class VehicleSummaryUser(HttpUser):
     """Simulates a client hitting the heavy 10-table join endpoint."""
@@ -93,9 +225,16 @@ class VehicleSummaryUser(HttpUser):
                     f"{manufacturer} {model} {year}"
                 )
                 return
-            body = response.json()
-            if not body.get("manufacturer", {}).get("name"):
-                response.failure("Missing manufacturer.name in response")
+            try:
+                body = response.json()
+            except ValueError:
+                response.failure("Response body is not valid JSON")
+                return
+            problem = _validate_summary(body, manufacturer, model, year)
+            if problem is not None:
+                response.failure(
+                    f"Invalid result for {manufacturer} {model} {year}: {problem}"
+                )
 
 
 # --------------------------------------------------------------------------- #

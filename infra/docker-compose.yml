@@ -7,6 +7,10 @@ services:
       PERSIST_STATE: "1"
       S3_PERSIST: "1"
       ATHENA_ENGINE: duckdb
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     expose:
       - "4566"
     volumes:
@@ -14,20 +18,37 @@ services:
       - ministack_state:/tmp/ministack-state
       - ministack_s3:/tmp/ministack-data/s3
 
+  seed-init:
+    image: amazon/aws-cli:2.15.17
+    container_name: seed-init
+    restart: "no"
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://ministack:4566
+      VEHICLE_DATA_BUCKET: vehicle-data
+      VEHICLE_DATA_PREFIX: parquet/
+      ATHENA_RESULTS_BUCKET: athena-results
+    volumes:
+      - ./resources/seed-s3.sh:/seed-s3.sh:ro
+      - ./resources/bucket_data/parquet:/parquet:ro
+    entrypoint: ["/bin/sh", "/seed-s3.sh"]
+    depends_on:
+      - ministack
+
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     container_name: toxiproxy
     command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
     ports:
-      - "4566:4566"   # API/clients hit ministack through the proxy here
-      - "8474:8474"   # Toxiproxy admin API (add/remove latency toxics)
+      - "4566:4566" 
+      - "8474:8474"  
     volumes:
       - ./resources/toxiproxy.json:/config/toxiproxy.json:ro
     depends_on:
       - ministack
 
-  # One-shot init: applies the latency toxic so the delay is always present
-  # without a manual ./latency.sh call. Override via LATENCY_MS / JITTER_MS.
   toxics-init:
     image: curlimages/curl:8.10.1
     container_name: toxics-init
@@ -49,7 +70,6 @@ services:
       dockerfile: Dockerfile
     container_name: api
     environment:
-      # Route AWS SDK traffic through toxiproxy so latency toxics apply.
       AWS_ENDPOINT_URL: http://toxiproxy:4566
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
@@ -60,11 +80,15 @@ services:
     ports:
       - "8000:8000"
     # Resource limits — must stay within the challenge constraints.
-    # mem_limit: 1024m
+    mem_limit: 1024m
     cpus: 0.5
     depends_on:
-      - toxiproxy
-      - toxics-init
+      toxiproxy:
+        condition: service_started
+      toxics-init:
+        condition: service_started
+      seed-init:
+        condition: service_completed_successfully
 
 volumes:
   ministack_state:
