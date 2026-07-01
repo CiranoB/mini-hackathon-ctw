@@ -44,6 +44,13 @@ TARGET_REQUESTS = int(os.getenv("TARGET_REQUESTS", "100"))
 # evenly across RUN_SECONDS.
 _THROUGHPUT_PER_SEC = TARGET_REQUESTS / RUN_SECONDS if RUN_SECONDS > 0 else 1.0
 
+# Warm-up state. While this is set, users hit the lightweight `/ready` endpoint
+# (a trivial `SELECT 1` Athena round-trip) instead of the heavy
+# `/vehicle-summary` join. This primes JIT, boto3/S3 clients and DuckDB without
+# exercising the real query path, then flips off once the measured window
+# starts. Starts active only when there is a warm-up window to honour.
+_warmup_active = WARMUP_SECONDS > 0
+
 # --------------------------------------------------------------------------- #
 # Query targets — verified joinable (manufacturer, model, year) tuples that all
 # return HTTP 200 from /vehicle-summary. BMW X1 1999 is the deterministic
@@ -212,6 +219,11 @@ class VehicleSummaryUser(HttpUser):
 
     @task
     def vehicle_summary(self) -> None:
+        # During the warm-up window, only send cheap readiness probes so the
+        # heavy join path is never exercised until measurement begins.
+        if _warmup_active:
+            self._ready_probe()
+            return
         manufacturer, model, year = random.choice(TARGETS)
         with self.client.get(
             "/vehicle-summary",
@@ -236,6 +248,17 @@ class VehicleSummaryUser(HttpUser):
                     f"Invalid result for {manufacturer} {model} {year}: {problem}"
                 )
 
+    def _ready_probe(self) -> None:
+        """Warm-up request: hit the lightweight `/ready` endpoint instead of the
+        real query. Stats from this window are discarded after warm-up."""
+        with self.client.get(
+            "/ready",
+            name="/ready (warmup)",
+            catch_response=True,
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"HTTP {response.status_code} on /ready warmup")
+
 
 # --------------------------------------------------------------------------- #
 # Warm-up handling: discard everything sent during the warm-up window so the
@@ -247,13 +270,17 @@ def _on_test_start(environment, **_kwargs) -> None:
         return
 
     def _reset_after_warmup() -> None:
+        global _warmup_active
         gevent.sleep(WARMUP_SECONDS)
+        # Switch users over to the real /vehicle-summary path and drop the
+        # readiness-probe stats collected during warm-up.
+        _warmup_active = False
         runner = environment.runner
         if runner is not None:
             runner.stats.reset_all()
         print(
-            f"[warmup] {WARMUP_SECONDS:.0f}s warm-up complete — stats reset; "
-            f"measuring for {RUN_SECONDS:.0f}s "
+            f"[warmup] {WARMUP_SECONDS:.0f}s warm-up complete (/ready probes) — "
+            f"stats reset; measuring /vehicle-summary for {RUN_SECONDS:.0f}s "
             f"(~{TARGET_REQUESTS} requests target)."
         )
 
