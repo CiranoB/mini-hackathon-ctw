@@ -38,6 +38,27 @@ done
 aws s3 mb "s3://$BUCKET" >/dev/null 2>&1 || true
 aws s3 mb "s3://$RESULTS" >/dev/null 2>&1 || true
 
+# How many parquet files do we expect to end up in the bucket?
+expected=0
+for f in "$SRC"/*.parquet; do
+  [ -e "$f" ] || { echo "No parquet files found in $SRC" >&2; exit 1; }
+  expected=$((expected + 1))
+done
+
+# Skip re-uploading when the bucket is already populated. ministack persists S3
+# in the ministack_s3 volume, so on a plain restart or an API-only rebuild the
+# data is still there — no need to push the big parquet files again.
+if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
+  existing=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$PREFIX" \
+    --query 'length(Contents)' --output text 2>/dev/null || echo 0)
+  [ "$existing" = "None" ] && existing=0
+  if [ "$existing" -ge "$expected" ]; then
+    echo "Bucket s3://$BUCKET already has $existing object(s) under '$PREFIX' (expected $expected); skipping upload."
+    exit 0
+  fi
+  echo "Bucket s3://$BUCKET has $existing/$expected object(s) under '$PREFIX'; (re)uploading."
+fi
+
 # Upload every parquet file. ministack rejects the default CRC64NVME checksum,
 # so force SHA256 via the low-level s3api put-object (the high-level `s3 cp`
 # does not accept --checksum-algorithm on this CLI version). Overwrites keep
