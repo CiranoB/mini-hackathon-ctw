@@ -1,8 +1,0 @@
-[
-  {
-    "name": "ministack",
-    "listen": "0.0.0.0:4566",
-    "upstream": "ministack:4566",
-    "enabled": true
-  }
-]

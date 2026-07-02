@@ -3,9 +3,6 @@
 # Runs as a one-shot init container after ministack starts, so the buckets and
 # parquet files are always present without any manual `mini s3 cp` step.
 #
-# Talks to ministack DIRECTLY (not through toxiproxy) so the upload is not
-# slowed down by the latency toxic.
-#
 # Override via environment variables:
 #   AWS_ENDPOINT_URL       (default http://ministack:4566)
 #   VEHICLE_DATA_BUCKET    (default vehicle-data)

@@ -6,7 +6,7 @@ This repo now includes a minimal FastAPI app that reads all `.parquet` files fro
 
 ## Run everything containerized
 
-The whole stack (ministack + toxiproxy + the API) runs with Docker Compose.
+The whole stack (ministack + the API) runs with Docker Compose.
 The API is built from the multi-stage alpine [`Dockerfile`](Dockerfile) and is
 capped at **512 MB RAM** and **0.5 CPU**.
 
@@ -15,12 +15,11 @@ cd infra
 docker compose up -d --build
 ```
 
-This starts three containers:
+This starts two containers:
 
 | Service | Purpose | Host port |
 |---------|---------|-----------|
-| `ministack` | Emulates AWS Athena + S3 (DuckDB engine) | — |
-| `toxiproxy` | Network proxy to inject latency toxics | 4566, 8474 |
+| `ministack` | Emulates AWS Athena + S3 (DuckDB engine) | 4566 |
 | `api` | FastAPI service | 8000 |
 
 > **Note:** the API publishes host port `8000`. If a local dev server is already

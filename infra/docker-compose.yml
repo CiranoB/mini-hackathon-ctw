@@ -11,8 +11,8 @@ services:
       nofile:
         soft: 1048576
         hard: 1048576
-    expose:
-      - "4566"
+    ports:
+      - "4566:4566"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ministack_state:/tmp/ministack-state
@@ -37,40 +37,13 @@ services:
     depends_on:
       - ministack
 
-  toxiproxy:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
-    container_name: toxiproxy
-    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
-    ports:
-      - "4566:4566" 
-      - "8474:8474"  
-    volumes:
-      - ./resources/toxiproxy.json:/config/toxiproxy.json:ro
-    depends_on:
-      - ministack
-
-  toxics-init:
-    image: curlimages/curl:8.10.1
-    container_name: toxics-init
-    restart: "no"
-    environment:
-      TOXIPROXY_ADMIN: http://toxiproxy:8474
-      PROXY: ministack
-      LATENCY_MS: "150"
-      JITTER_MS: "0"
-    volumes:
-      - ./resources/apply-toxics.sh:/apply-toxics.sh:ro
-    entrypoint: ["sh", "/apply-toxics.sh"]
-    depends_on:
-      - toxiproxy
-
   api:
     build:
       context: ..
       dockerfile: Dockerfile
     container_name: api
     environment:
-      AWS_ENDPOINT_URL: http://toxiproxy:4566
+      AWS_ENDPOINT_URL: http://ministack:4566
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -83,9 +56,7 @@ services:
     mem_limit: 1024m
     cpus: 0.5
     depends_on:
-      toxiproxy:
-        condition: service_started
-      toxics-init:
+      ministack:
         condition: service_started
       seed-init:
         condition: service_completed_successfully
